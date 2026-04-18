@@ -23,7 +23,7 @@
   }
   body {
     display: grid;
-    grid-template-rows: auto 1fr auto;
+    grid-template-rows: auto 1fr auto auto;
     height: 100vh;
   }
   header, footer {
@@ -58,19 +58,18 @@
     height: 100%;
     display: block;
   }
-  .empty {
-    position: absolute;
-    inset: 0;
-    display: flex;
-    flex-direction: column;
-    justify-content: center;
-    align-items: center;
+  .hint-bar {
+    padding: 6px 14px;
+    background: #141414;
+    border-top: 1px solid var(--border);
     color: var(--muted);
-    text-align: center;
-    padding: 40px;
-    pointer-events: none;
-    gap: 8px;
+    font-size: 12px;
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    flex-wrap: wrap;
   }
+  .hint-bar .spacer { flex: 1; }
   main.dragover::after {
     content: "Drop image to load";
     position: absolute;
@@ -193,15 +192,13 @@
 
 <main>
   <canvas id="canvas"></canvas>
-  <div class="empty" id="empty">
-    <div>Drop an image here, or click <b>Open image</b>.</div>
-    <div style="font-size:12px">PNG / TIFF / JPEG — 8-bit &amp; 16-bit supported</div>
-    <div style="font-size:12px">
-      drag to move · wheel to zoom · <kbd>space</kbd>+drag to pan ·
-      <kbd>↑</kbd><kbd>↓</kbd><kbd>←</kbd><kbd>→</kbd> nudge · <kbd>Shift</kbd> = 10px
-    </div>
-  </div>
 </main>
+
+<div class="hint-bar">
+  <span id="hintText">Drop an image here, or click <b>Open image</b> — PNG / TIFF / JPEG · 8-bit &amp; 16-bit</span>
+  <span class="spacer"></span>
+  <span>drag to move · wheel to zoom · <kbd>space</kbd>+drag to pan · <kbd>↑</kbd><kbd>↓</kbd><kbd>←</kbd><kbd>→</kbd> nudge · <kbd>Shift</kbd> = 10px</span>
+</div>
 
 <footer>
   <span class="info" id="cropInfo">—</span>
@@ -215,7 +212,7 @@
   // ===== DOM =====
   const fileInput = document.getElementById('file');
   const canvas    = document.getElementById('canvas');
-  const emptyEl   = document.getElementById('empty');
+  const hintText  = document.getElementById('hintText');
   const info      = document.getElementById('info');
   const cropInfo  = document.getElementById('cropInfo');
   const exportNote= document.getElementById('exportNote');
@@ -342,7 +339,7 @@
       }
 
       source = src;
-      emptyEl.hidden = true;
+      hintText.textContent = `${f.name} loaded — drag to move crop, wheel to zoom, space+drag to pan`;
       exportBtn.disabled = false;
 
       const depthTag = src.bitDepth ? ` ${src.bitDepth}-bit` : '';
