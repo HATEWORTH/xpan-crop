@@ -47,9 +47,51 @@
     letter-spacing: 0.5px;
   }
   main {
-    position: relative;
+    display: grid;
+    grid-template-columns: 220px 1fr;
     overflow: hidden;
     background: #0a0a0a;
+    min-height: 0;
+  }
+  .sidebar {
+    background: #141414;
+    border-right: 1px solid var(--border);
+    padding: 14px;
+    overflow-y: auto;
+    color: var(--muted);
+    font-size: 11px;
+    line-height: 1.5;
+  }
+  .sidebar h2 {
+    margin: 14px 0 6px;
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 1px;
+    color: var(--accent);
+    text-transform: uppercase;
+  }
+  .sidebar h2:first-child { margin-top: 0; }
+  .sidebar dl {
+    margin: 0;
+    display: grid;
+    grid-template-columns: auto 1fr;
+    column-gap: 10px;
+    row-gap: 3px;
+  }
+  .sidebar dt {
+    color: var(--fg);
+    font-family: ui-monospace, Consolas, monospace;
+    font-size: 10.5px;
+    white-space: nowrap;
+  }
+  .sidebar dd { margin: 0; font-size: 11px; }
+  .sidebar ul { margin: 0; padding-left: 14px; }
+  .sidebar li { margin: 3px 0; }
+  .canvas-wrap {
+    position: relative;
+    overflow: hidden;
+    min-width: 0;
+    min-height: 0;
   }
   #canvas {
     position: absolute;
@@ -70,7 +112,7 @@
     flex-wrap: wrap;
   }
   .hint-bar .spacer { flex: 1; }
-  main.dragover::after {
+  .canvas-wrap.dragover::after {
     content: "Drop image to load";
     position: absolute;
     inset: 12px;
@@ -86,6 +128,10 @@
     background: rgba(232,184,74,0.06);
     pointer-events: none;
     z-index: 10;
+  }
+  @media (max-width: 720px) {
+    main { grid-template-columns: 1fr; }
+    .sidebar { display: none; }
   }
   button, label.btn, select {
     background: #2a2a2a;
@@ -191,13 +237,47 @@
 </header>
 
 <main>
-  <canvas id="canvas"></canvas>
+  <aside class="sidebar">
+    <h2>Mouse</h2>
+    <dl>
+      <dt>Drag</dt><dd>move crop</dd>
+      <dt>Wheel</dt><dd>zoom at cursor</dd>
+      <dt>Drag corner</dt><dd>resize (keep ratio)</dd>
+      <dt>Ctrl+drag corner</dt><dd>free resize + ratio</dd>
+      <dt>Space+drag</dt><dd>pan view</dd>
+      <dt>Right-drag</dt><dd>pan view</dd>
+    </dl>
+
+    <h2>Keys</h2>
+    <dl>
+      <dt>← ↑ → ↓</dt><dd>nudge 1 px</dd>
+      <dt>Shift+arrow</dt><dd>nudge 10 px</dd>
+      <dt>+ / −</dt><dd>zoom in / out</dd>
+      <dt>0</dt><dd>fit to window</dd>
+    </dl>
+
+    <h2>Formats</h2>
+    <dl>
+      <dt>PNG</dt><dd>8 / 16-bit lossless</dd>
+      <dt>TIFF</dt><dd>8 / 16-bit lossless</dd>
+      <dt>JPEG</dt><dd>re-encoded q=97</dd>
+    </dl>
+
+    <h2>Tips</h2>
+    <ul>
+      <li>Default XPan ratio is 65:24</li>
+      <li>Ctrl+drag corners for tight crops of small subjects</li>
+      <li>No resampling — exports are bit-exact slices of the source</li>
+      <li>Open RAW in Lightroom, export TIFF/PNG for best quality here</li>
+    </ul>
+  </aside>
+  <div class="canvas-wrap" id="canvasWrap">
+    <canvas id="canvas"></canvas>
+  </div>
 </main>
 
 <div class="hint-bar">
   <span id="hintText">Drop an image here, or click <b>Open image</b> — PNG / TIFF / JPEG · 8-bit &amp; 16-bit</span>
-  <span class="spacer"></span>
-  <span>drag to move · wheel to zoom · <kbd>space</kbd>+drag to pan · <kbd>↑</kbd><kbd>↓</kbd><kbd>←</kbd><kbd>→</kbd> nudge · <kbd>Shift</kbd> = 10px</span>
 </div>
 
 <footer>
@@ -226,11 +306,14 @@
   const zoomOutBtn= document.getElementById('zoomOut');
   const zoomLabel = document.getElementById('zoomLabel');
   const fitBtn    = document.getElementById('fitBtn');
-  const mainEl    = document.querySelector('main');
+  const canvasWrap= document.getElementById('canvasWrap');
   const ctx       = canvas.getContext('2d');
 
   // ===== Constants =====
   const MATTE_PX = 20;
+  const HANDLE_SZ = 10;
+  const HANDLE_HIT = 14;
+  const HANDLE_CURSOR = { tl: 'nwse-resize', br: 'nwse-resize', tr: 'nesw-resize', bl: 'nesw-resize' };
   const PRESETS = {
     '65:24':  { w: 65,  h: 24  },
     '3:2':    { w: 3,   h: 2   },
@@ -339,7 +422,7 @@
       }
 
       source = src;
-      hintText.textContent = `${f.name} loaded — drag to move crop, wheel to zoom, space+drag to pan`;
+      hintText.textContent = `${f.name} loaded — drag corners to resize, ctrl+drag to free resize`;
       exportBtn.disabled = false;
 
       const depthTag = src.bitDepth ? ` ${src.bitDepth}-bit` : '';
@@ -482,6 +565,18 @@
     ctx.stroke();
     ctx.setLineDash([]);
 
+    // Corner handles
+    const hs = HANDLE_SZ;
+    const half = hs / 2;
+    const corners = [[cx, cy], [cx + cw, cy], [cx, cy + ch], [cx + cw, cy + ch]];
+    ctx.fillStyle   = '#ffffff';
+    ctx.strokeStyle = '#111';
+    ctx.lineWidth = 1;
+    for (const [hx, hy] of corners) {
+      ctx.fillRect(hx - half, hy - half, hs, hs);
+      ctx.strokeRect(hx - half + 0.5, hy - half + 0.5, hs - 1, hs - 1);
+    }
+
     updateCropInfo();
   }
   function updateCropInfo() {
@@ -493,14 +588,102 @@
   }
 
   // ===== Interaction =====
+  function cropScreenRect() {
+    const imgW = source.w * view.scale, imgH = source.h * view.scale;
+    return {
+      x: view.ox + cropN.left * imgW,
+      y: view.oy + cropN.top  * imgH,
+      w: (cropN.right  - cropN.left) * imgW,
+      h: (cropN.bottom - cropN.top)  * imgH,
+      imgW, imgH,
+    };
+  }
   function hitCrop(cx, cy) {
     if (!source) return false;
-    const imgW = source.w * view.scale, imgH = source.h * view.scale;
-    const x = view.ox + cropN.left * imgW;
-    const y = view.oy + cropN.top  * imgH;
-    const w = (cropN.right - cropN.left) * imgW;
-    const h = (cropN.bottom - cropN.top) * imgH;
-    return cx >= x && cx <= x + w && cy >= y && cy <= y + h;
+    const r = cropScreenRect();
+    return cx >= r.x && cx <= r.x + r.w && cy >= r.y && cy <= r.y + r.h;
+  }
+  function hitHandle(cx, cy) {
+    if (!source) return null;
+    const r = cropScreenRect();
+    const corners = [
+      { n: 'tl', x: r.x,       y: r.y       },
+      { n: 'tr', x: r.x + r.w, y: r.y       },
+      { n: 'bl', x: r.x,       y: r.y + r.h },
+      { n: 'br', x: r.x + r.w, y: r.y + r.h },
+    ];
+    for (const c of corners) {
+      if (Math.abs(cx - c.x) <= HANDLE_HIT && Math.abs(cy - c.y) <= HANDLE_HIT) return c.n;
+    }
+    return null;
+  }
+  function startResize(handle) {
+    const r = cropScreenRect();
+    let ax, ay;
+    if (handle === 'tl') { ax = r.x + r.w; ay = r.y + r.h; }
+    if (handle === 'tr') { ax = r.x;       ay = r.y + r.h; }
+    if (handle === 'bl') { ax = r.x + r.w; ay = r.y;       }
+    if (handle === 'br') { ax = r.x;       ay = r.y;       }
+    dragMode  = 'resize';
+    dragStart = { handle, anchor: { x: ax, y: ay } };
+  }
+  function doResize(cx, cy, free) {
+    const { anchor } = dragStart;
+    const imgL = view.ox, imgT = view.oy;
+    const imgR = imgL + source.w * view.scale;
+    const imgB = imgT + source.h * view.scale;
+
+    const ccx = Math.max(imgL, Math.min(imgR, cx));
+    const ccy = Math.max(imgT, Math.min(imgB, cy));
+    const dx = ccx - anchor.x;
+    const dy = ccy - anchor.y;
+    const sX = dx >= 0 ? 1 : -1;
+    const sY = dy >= 0 ? 1 : -1;
+    let w = Math.abs(dx);
+    let h = Math.abs(dy);
+    const minPx = 16 * view.scale;
+
+    if (free) {
+      w = Math.max(minPx, w);
+      h = Math.max(minPx, h);
+    } else {
+      const a = Math.max(1, +arW.value) / Math.max(1, +arH.value);
+      const fromX = { w: w, h: w / a };
+      const fromY = { w: h * a, h: h };
+      const pick = (fromX.w * fromX.h >= fromY.w * fromY.h) ? fromX : fromY;
+      w = pick.w; h = pick.h;
+      const availW = sX >= 0 ? (imgR - anchor.x) : (anchor.x - imgL);
+      const availH = sY >= 0 ? (imgB - anchor.y) : (anchor.y - imgT);
+      if (w > availW || h > availH) {
+        const r = Math.min(availW / w, availH / h);
+        w *= r; h *= r;
+      }
+      w = Math.max(minPx, w);
+      h = w / a;
+    }
+
+    const x = sX >= 0 ? anchor.x : anchor.x - w;
+    const y = sY >= 0 ? anchor.y : anchor.y - h;
+    const imgW = source.w * view.scale;
+    const imgH = source.h * view.scale;
+    cropN = {
+      left:   Math.max(0, (x - view.ox) / imgW),
+      top:    Math.max(0, (y - view.oy) / imgH),
+      right:  Math.min(1, (x + w - view.ox) / imgW),
+      bottom: Math.min(1, (y + h - view.oy) / imgH),
+    };
+
+    if (free) {
+      const W = Math.round((cropN.right  - cropN.left) * source.w);
+      const H = Math.round((cropN.bottom - cropN.top)  * source.h);
+      if (W > 0 && H > 0) {
+        suppressInput = true;
+        arW.value = W; arH.value = H;
+        suppressInput = false;
+        presetSel.value = 'custom';
+      }
+    }
+    render();
   }
   function moveCropBy(dxN, dyN, baseline = cropN) {
     const w = baseline.right - baseline.left;
@@ -519,14 +702,19 @@
     const cx = e.clientX - r.left;
     const cy = e.clientY - r.top;
     const wantPan = spaceHeld || e.button === 1 || e.button === 2;
-    if (!wantPan && e.button === 0 && hitCrop(cx, cy)) {
+    const handle = !wantPan && e.button === 0 ? hitHandle(cx, cy) : null;
+    if (handle) {
+      startResize(handle);
+      canvas.style.cursor = HANDLE_CURSOR[handle];
+    } else if (!wantPan && e.button === 0 && hitCrop(cx, cy)) {
       dragMode = 'crop';
       dragStart = { x: cx, y: cy, base: { ...cropN } };
+      canvas.style.cursor = 'grabbing';
     } else {
       dragMode = 'pan';
       dragStart = { x: cx, y: cy, ox: view.ox, oy: view.oy };
+      canvas.style.cursor = 'grabbing';
     }
-    canvas.style.cursor = 'grabbing';
   });
   canvas.addEventListener('pointermove', e => {
     const r = canvas.getBoundingClientRect();
@@ -534,14 +722,19 @@
     const cy = e.clientY - r.top;
     if (!dragMode) {
       if (source) {
-        const over = hitCrop(cx, cy);
-        canvas.style.cursor = spaceHeld ? 'grab' : (over ? 'grab' : 'default');
+        const h = hitHandle(cx, cy);
+        if (h) canvas.style.cursor = HANDLE_CURSOR[h];
+        else if (spaceHeld) canvas.style.cursor = 'grab';
+        else if (hitCrop(cx, cy)) canvas.style.cursor = 'grab';
+        else canvas.style.cursor = 'default';
       }
       return;
     }
     if (dragMode === 'crop') {
       const imgW = source.w * view.scale, imgH = source.h * view.scale;
       moveCropBy((cx - dragStart.x) / imgW, (cy - dragStart.y) / imgH, dragStart.base);
+    } else if (dragMode === 'resize') {
+      doResize(cx, cy, e.ctrlKey || e.metaKey);
     } else {
       view.ox = dragStart.ox + (cx - dragStart.x);
       view.oy = dragStart.oy + (cy - dragStart.y);
@@ -629,14 +822,14 @@
   // Drag & drop
   let dragDepth = 0;
   const hasFiles = e => e.dataTransfer && Array.from(e.dataTransfer.types || []).includes('Files');
-  window.addEventListener('dragenter', e => { if (!hasFiles(e)) return; e.preventDefault(); dragDepth++; mainEl.classList.add('dragover'); });
+  window.addEventListener('dragenter', e => { if (!hasFiles(e)) return; e.preventDefault(); dragDepth++; canvasWrap.classList.add('dragover'); });
   window.addEventListener('dragover',  e => { if (!hasFiles(e)) return; e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; });
-  window.addEventListener('dragleave', e => { if (!hasFiles(e)) return; dragDepth = Math.max(0, dragDepth - 1); if (!dragDepth) mainEl.classList.remove('dragover'); });
+  window.addEventListener('dragleave', e => { if (!hasFiles(e)) return; dragDepth = Math.max(0, dragDepth - 1); if (!dragDepth) canvasWrap.classList.remove('dragover'); });
   window.addEventListener('drop',      e => {
     if (!hasFiles(e)) return;
     e.preventDefault();
     dragDepth = 0;
-    mainEl.classList.remove('dragover');
+    canvasWrap.classList.remove('dragover');
     const f = e.dataTransfer.files && e.dataTransfer.files[0];
     if (f) loadFile(f);
   });
