@@ -1,0 +1,468 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>XPan Crop</title>
+<style>
+  :root {
+    --bg: #111;
+    --panel: #1b1b1b;
+    --fg: #eee;
+    --muted: #888;
+    --accent: #e8b84a;
+    --border: #2a2a2a;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0;
+    height: 100%;
+    background: var(--bg);
+    color: var(--fg);
+    font-family: -apple-system, Segoe UI, Roboto, sans-serif;
+    font-size: 14px;
+  }
+  body {
+    display: grid;
+    grid-template-rows: auto 1fr auto;
+    height: 100vh;
+  }
+  header, footer {
+    padding: 12px 16px;
+    background: var(--panel);
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    flex-wrap: wrap;
+  }
+  footer {
+    border-top: 1px solid var(--border);
+    border-bottom: none;
+  }
+  h1 {
+    font-size: 15px;
+    font-weight: 600;
+    margin: 0 8px 0 0;
+    color: var(--accent);
+    letter-spacing: 0.5px;
+  }
+  main {
+    position: relative;
+    overflow: hidden;
+    background: #0a0a0a;
+  }
+  #stage {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  #imgWrap {
+    position: relative;
+    user-select: none;
+  }
+  #img {
+    display: block;
+    max-width: 100%;
+    max-height: 100%;
+    image-rendering: high-quality;
+  }
+  #crop {
+    position: absolute;
+    border: 1px solid rgba(255,255,255,0.9);
+    box-shadow: 0 0 0 9999px rgba(0,0,0,0.55);
+    cursor: grab;
+  }
+  #crop.dragging { cursor: grabbing; }
+  #crop::before, #crop::after {
+    content: "";
+    position: absolute;
+    left: 0; right: 0;
+    border-top: 1px dashed rgba(255,255,255,0.35);
+  }
+  #crop::before { top: 33.33%; }
+  #crop::after  { top: 66.66%; }
+  .matte {
+    position: absolute;
+    background: #fff;
+    pointer-events: none;
+    display: none;
+  }
+  body.matte-on .matte { display: block; }
+  .empty {
+    color: var(--muted);
+    text-align: center;
+    padding: 40px;
+  }
+  main.dragover::after {
+    content: "Drop image to load";
+    position: absolute;
+    inset: 12px;
+    border: 2px dashed var(--accent);
+    border-radius: 8px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--accent);
+    font-size: 16px;
+    font-weight: 600;
+    letter-spacing: 0.5px;
+    background: rgba(232,184,74,0.06);
+    pointer-events: none;
+    z-index: 10;
+  }
+  button, label.btn, input[type=file]::file-selector-button {
+    background: #2a2a2a;
+    color: var(--fg);
+    border: 1px solid var(--border);
+    padding: 7px 12px;
+    border-radius: 4px;
+    font-size: 13px;
+    cursor: pointer;
+    font-family: inherit;
+  }
+  button:hover, label.btn:hover { background: #333; }
+  button.primary {
+    background: var(--accent);
+    color: #111;
+    border-color: var(--accent);
+    font-weight: 600;
+  }
+  button.primary:hover { background: #f3c45a; }
+  button:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+  }
+  input[type=file] { display: none; }
+  .info {
+    color: var(--muted);
+    font-size: 12px;
+    font-family: ui-monospace, Consolas, monospace;
+  }
+  .spacer { flex: 1; }
+  .field {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+    color: var(--muted);
+  }
+  .field input[type=number] {
+    width: 60px;
+    background: #0d0d0d;
+    color: var(--fg);
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    padding: 4px 6px;
+    font-family: ui-monospace, Consolas, monospace;
+  }
+  kbd {
+    background: #222;
+    border: 1px solid #333;
+    border-radius: 3px;
+    padding: 1px 5px;
+    font-family: ui-monospace, Consolas, monospace;
+    font-size: 11px;
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>XPAN CROP</h1>
+  <label class="btn" for="file">Open image</label>
+  <input type="file" id="file" accept="image/*">
+  <div class="field">
+    <span>Aspect</span>
+    <input type="number" id="arW" value="65" min="1" step="1">
+    <span>:</span>
+    <input type="number" id="arH" value="24" min="1" step="1">
+  </div>
+  <button id="center">Center</button>
+  <button id="matteBtn">Matte: Off</button>
+  <div class="spacer"></div>
+  <span class="info" id="info">no image loaded</span>
+</header>
+
+<main>
+  <div id="stage">
+    <div class="empty" id="empty">
+      Drop an image here, or click <b>Open image</b>.<br>
+      <span style="font-size:12px">Drag the crop box to position · <kbd>↑</kbd><kbd>↓</kbd><kbd>←</kbd><kbd>→</kbd> nudge · <kbd>Shift</kbd> = 10px</span>
+    </div>
+    <div id="imgWrap" hidden>
+      <img id="img" alt="">
+      <div id="crop"></div>
+      <div class="matte" id="matteT"></div>
+      <div class="matte" id="matteB"></div>
+      <div class="matte" id="matteL"></div>
+      <div class="matte" id="matteR"></div>
+    </div>
+  </div>
+</main>
+
+<footer>
+  <span class="info" id="cropInfo">—</span>
+  <div class="spacer"></div>
+  <button id="exportPng" class="primary" disabled>Export PNG</button>
+</footer>
+
+<script>
+(() => {
+  const fileInput = document.getElementById('file');
+  const imgEl     = document.getElementById('img');
+  const wrap      = document.getElementById('imgWrap');
+  const emptyEl   = document.getElementById('empty');
+  const cropEl    = document.getElementById('crop');
+  const info      = document.getElementById('info');
+  const cropInfo  = document.getElementById('cropInfo');
+  const arW       = document.getElementById('arW');
+  const arH       = document.getElementById('arH');
+  const centerBtn = document.getElementById('center');
+  const matteBtn  = document.getElementById('matteBtn');
+  const exportBtn = document.getElementById('exportPng');
+  const matteT = document.getElementById('matteT');
+  const matteB = document.getElementById('matteB');
+  const matteL = document.getElementById('matteL');
+  const matteR = document.getElementById('matteR');
+
+  const MATTE_PX = 20;      // in source/export pixels
+  let matteOn = false;
+
+  // Source image and crop state in NORMALIZED coords [0..1] of the source image.
+  let source = null;          // { bitmap, name, w, h }
+  let cropN  = { top: 0, left: 0, bottom: 1, right: 1 };
+
+  // --- load ---
+  async function loadFile(f) {
+    if (!f) return;
+    if (!f.type.startsWith('image/')) {
+      info.textContent = `not an image: ${f.name}`;
+      return;
+    }
+    try {
+      const bitmap = await createImageBitmap(f);
+      source = { bitmap, name: f.name, w: bitmap.width, h: bitmap.height };
+      imgEl.src = URL.createObjectURL(f);
+      await imgEl.decode();
+      emptyEl.hidden = true;
+      wrap.hidden = false;
+      exportBtn.disabled = false;
+      info.textContent = `${f.name}  ${source.w} x ${source.h}`;
+      recomputeCrop(true);
+    } catch (err) {
+      info.textContent = `failed to decode: ${f.name}`;
+      console.error(err);
+    }
+  }
+
+  fileInput.addEventListener('change', () => loadFile(fileInput.files[0]));
+
+  // --- drag & drop (whole window) ---
+  const mainEl = document.querySelector('main');
+  let dragDepth = 0;
+  const hasFiles = e => e.dataTransfer && Array.from(e.dataTransfer.types || []).includes('Files');
+
+  window.addEventListener('dragenter', e => {
+    if (!hasFiles(e)) return;
+    e.preventDefault();
+    dragDepth++;
+    mainEl.classList.add('dragover');
+  });
+  window.addEventListener('dragover', e => {
+    if (!hasFiles(e)) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'copy';
+  });
+  window.addEventListener('dragleave', e => {
+    if (!hasFiles(e)) return;
+    dragDepth = Math.max(0, dragDepth - 1);
+    if (dragDepth === 0) mainEl.classList.remove('dragover');
+  });
+  window.addEventListener('drop', e => {
+    if (!hasFiles(e)) return;
+    e.preventDefault();
+    dragDepth = 0;
+    mainEl.classList.remove('dragover');
+    const f = e.dataTransfer.files && e.dataTransfer.files[0];
+    if (f) loadFile(f);
+  });
+
+  // --- crop math ---
+  // Compute normalized crop box centered, locked to target aspect, fitting inside source.
+  function computeFitCrop(targetAspect) {
+    const src = source.w / source.h;
+    if (targetAspect >= src) {
+      // target is wider → full width, cut top/bottom
+      const hFrac = src / targetAspect;
+      const cut = (1 - hFrac) / 2;
+      return { left: 0, right: 1, top: cut, bottom: 1 - cut };
+    } else {
+      // target is taller → full height, cut sides
+      const wFrac = targetAspect / src;
+      const cut = (1 - wFrac) / 2;
+      return { top: 0, bottom: 1, left: cut, right: 1 - cut };
+    }
+  }
+
+  function recomputeCrop(centerIt) {
+    if (!source) return;
+    const a = Math.max(1, +arW.value) / Math.max(1, +arH.value);
+    const fit = computeFitCrop(a);
+    if (centerIt) {
+      cropN = fit;
+    } else {
+      // preserve existing position along the free axis, just re-fit
+      const cur = cropN;
+      if (fit.top > 0) {
+        // vertical slide allowed
+        const h = fit.bottom - fit.top;
+        const midY = (cur.top + cur.bottom) / 2;
+        let t = Math.max(0, Math.min(1 - h, midY - h / 2));
+        cropN = { left: 0, right: 1, top: t, bottom: t + h };
+      } else {
+        // horizontal slide allowed
+        const w = fit.right - fit.left;
+        const midX = (cur.left + cur.right) / 2;
+        let l = Math.max(0, Math.min(1 - w, midX - w / 2));
+        cropN = { top: 0, bottom: 1, left: l, right: l + w };
+      }
+    }
+    drawCrop();
+  }
+
+  function drawCrop() {
+    if (!source) return;
+    const rect = imgEl.getBoundingClientRect();
+    const scale = rect.width / source.w; // display px per source px
+    const x = (imgEl.offsetLeft) + cropN.left * rect.width;
+    const y = (imgEl.offsetTop)  + cropN.top  * rect.height;
+    const w = (cropN.right - cropN.left) * rect.width;
+    const h = (cropN.bottom - cropN.top) * rect.height;
+    cropEl.style.left = x + 'px';
+    cropEl.style.top  = y + 'px';
+    cropEl.style.width  = w + 'px';
+    cropEl.style.height = h + 'px';
+
+    // matte strips hug the crop box, sitting on top of the dim shadow
+    const m = MATTE_PX * scale;
+    matteT.style.left = (x - m) + 'px';
+    matteT.style.top  = (y - m) + 'px';
+    matteT.style.width  = (w + m * 2) + 'px';
+    matteT.style.height = m + 'px';
+    matteB.style.left = (x - m) + 'px';
+    matteB.style.top  = (y + h) + 'px';
+    matteB.style.width  = (w + m * 2) + 'px';
+    matteB.style.height = m + 'px';
+    matteL.style.left = (x - m) + 'px';
+    matteL.style.top  = y + 'px';
+    matteL.style.width  = m + 'px';
+    matteL.style.height = h + 'px';
+    matteR.style.left = (x + w) + 'px';
+    matteR.style.top  = y + 'px';
+    matteR.style.width  = m + 'px';
+    matteR.style.height = h + 'px';
+
+    updateInfo();
+  }
+
+  function updateInfo() {
+    const pw = Math.round((cropN.right - cropN.left) * source.w);
+    const ph = Math.round((cropN.bottom - cropN.top) * source.h);
+    const f = n => n.toFixed(4);
+    cropInfo.textContent =
+      `crop ${pw} x ${ph}  ·  L ${f(cropN.left)}  T ${f(cropN.top)}  R ${f(cropN.right)}  B ${f(cropN.bottom)}`;
+  }
+
+  // --- drag / keyboard ---
+  let drag = null;
+  cropEl.addEventListener('pointerdown', e => {
+    cropEl.setPointerCapture(e.pointerId);
+    cropEl.classList.add('dragging');
+    drag = {
+      startX: e.clientX, startY: e.clientY,
+      start: { ...cropN },
+      rect: imgEl.getBoundingClientRect()
+    };
+  });
+  cropEl.addEventListener('pointermove', e => {
+    if (!drag) return;
+    const dxN = (e.clientX - drag.startX) / drag.rect.width;
+    const dyN = (e.clientY - drag.startY) / drag.rect.height;
+    moveCropBy(dxN, dyN, drag.start);
+  });
+  const endDrag = () => { drag = null; cropEl.classList.remove('dragging'); };
+  cropEl.addEventListener('pointerup', endDrag);
+  cropEl.addEventListener('pointercancel', endDrag);
+
+  function moveCropBy(dxN, dyN, baseline = cropN) {
+    const w = baseline.right - baseline.left;
+    const h = baseline.bottom - baseline.top;
+    // only move along the axis that has slack
+    let left = baseline.left, top = baseline.top;
+    if (w < 0.9999) left = Math.max(0, Math.min(1 - w, baseline.left + dxN));
+    if (h < 0.9999) top  = Math.max(0, Math.min(1 - h, baseline.top  + dyN));
+    cropN = { left, top, right: left + w, bottom: top + h };
+    drawCrop();
+  }
+
+  window.addEventListener('keydown', e => {
+    if (!source) return;
+    if (['ArrowLeft','ArrowRight','ArrowUp','ArrowDown'].indexOf(e.key) === -1) return;
+    e.preventDefault();
+    const step = (e.shiftKey ? 10 : 1) / Math.max(source.w, source.h);
+    if (e.key === 'ArrowLeft')  moveCropBy(-step, 0);
+    if (e.key === 'ArrowRight') moveCropBy( step, 0);
+    if (e.key === 'ArrowUp')    moveCropBy(0, -step);
+    if (e.key === 'ArrowDown')  moveCropBy(0,  step);
+  });
+
+  // --- aspect / center ---
+  arW.addEventListener('input', () => recomputeCrop(false));
+  arH.addEventListener('input', () => recomputeCrop(false));
+  centerBtn.addEventListener('click', () => recomputeCrop(true));
+  matteBtn.addEventListener('click', () => {
+    matteOn = !matteOn;
+    document.body.classList.toggle('matte-on', matteOn);
+    matteBtn.textContent = 'Matte: ' + (matteOn ? 'On' : 'Off');
+    drawCrop();
+  });
+  window.addEventListener('resize', drawCrop);
+  imgEl.addEventListener('load', drawCrop);
+
+  // --- export PNG at native resolution, lossless ---
+  exportBtn.addEventListener('click', async () => {
+    if (!source) return;
+    const sx = Math.round(cropN.left * source.w);
+    const sy = Math.round(cropN.top  * source.h);
+    const sw = Math.round((cropN.right - cropN.left) * source.w);
+    const sh = Math.round((cropN.bottom - cropN.top) * source.h);
+
+    const pad = matteOn ? MATTE_PX : 0;
+    const canvas = document.createElement('canvas');
+    canvas.width  = sw + pad * 2;
+    canvas.height = sh + pad * 2;
+    const ctx = canvas.getContext('2d');
+    ctx.imageSmoothingEnabled = false; // pixel-perfect copy, no resampling
+    if (pad) {
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+    }
+    ctx.drawImage(source.bitmap, sx, sy, sw, sh, pad, pad, sw, sh);
+
+    const blob = await new Promise(res => canvas.toBlob(res, 'image/png'));
+    const base = source.name.replace(/\.[^.]+$/, '');
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    const matteTag = matteOn ? '_matte' : '';
+    a.download = `${base}_xpan_${arW.value}x${arH.value}${matteTag}.png`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  });
+})();
+</script>
+</body>
+</html>
