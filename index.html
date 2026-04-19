@@ -227,10 +227,23 @@
   <button id="matteBtn">Matte: Off</button>
 
   <span class="divider"></span>
+  <div class="field">
+    <span>Rotate</span>
+    <input type="range" id="rotateSlider" min="-15" max="15" step="0.1" value="0" style="width:90px">
+    <span class="info" id="rotLabel" style="min-width:38px;">0.0°</span>
+    <button id="rotReset" class="icon" title="Reset rotation">⟲</button>
+  </div>
+  <button id="straightenBtn" title="Click two points along the horizon">Straighten</button>
+
+  <span class="divider"></span>
   <button id="zoomOut" class="icon" title="Zoom out (−)">−</button>
   <span class="info" id="zoomLabel" style="min-width:46px; text-align:center;">—</span>
   <button id="zoomIn" class="icon" title="Zoom in (+)">+</button>
   <button id="fitBtn" title="Fit to window (0)">Fit</button>
+
+  <span class="divider"></span>
+  <button id="dualBtn" title="Show 3:2 'normal' XPan frame alongside the pano">Dual: Off</button>
+  <button id="swapBtn" title="Swap pano ↔ normal XPan frames" hidden>⇄ Swap</button>
 
   <div class="spacer"></div>
   <span class="info" id="info">no image loaded</span>
@@ -246,6 +259,7 @@
       <dt>Ctrl+drag corner</dt><dd>free resize + ratio</dd>
       <dt>Space+drag</dt><dd>pan view</dd>
       <dt>Right-drag</dt><dd>pan view</dd>
+      <dt>Straighten</dt><dd>click 2 pts on horizon</dd>
     </dl>
 
     <h2>Keys</h2>
@@ -263,11 +277,21 @@
       <dt>JPEG</dt><dd>re-encoded q=97</dd>
     </dl>
 
+    <h2>XPan Equivalent</h2>
+    <div style="display:grid; grid-template-columns: auto 1fr; gap:4px 8px; align-items:center; margin-bottom:6px;">
+      <label for="focalIn">Focal mm</label>
+      <input id="focalIn" type="number" value="23" min="1" step="1" style="width:60px; background:#0d0d0d; color:var(--fg); border:1px solid var(--border); border-radius:3px; padding:3px 5px; font-family:ui-monospace,Consolas,monospace; font-size:11px;">
+      <label for="sensorIn">Sensor mm</label>
+      <input id="sensorIn" type="number" value="23.5" min="1" step="0.1" style="width:60px; background:#0d0d0d; color:var(--fg); border:1px solid var(--border); border-radius:3px; padding:3px 5px; font-family:ui-monospace,Consolas,monospace; font-size:11px;">
+    </div>
+    <div id="xpanInfo" style="color:var(--accent); font-family:ui-monospace,Consolas,monospace; font-size:11px;">load an image…</div>
+
     <h2>Tips</h2>
     <ul>
       <li>Default XPan ratio is 65:24</li>
       <li>Ctrl+drag corners for tight crops of small subjects</li>
       <li>No resampling — exports are bit-exact slices of the source</li>
+      <li>Rotation requires resampling — breaks the lossless guarantee</li>
       <li>Open RAW in Lightroom, export TIFF/PNG for best quality here</li>
     </ul>
   </aside>
@@ -307,6 +331,15 @@
   const zoomLabel = document.getElementById('zoomLabel');
   const fitBtn    = document.getElementById('fitBtn');
   const canvasWrap= document.getElementById('canvasWrap');
+  const rotateSlider = document.getElementById('rotateSlider');
+  const rotLabel  = document.getElementById('rotLabel');
+  const rotReset  = document.getElementById('rotReset');
+  const straightenBtn = document.getElementById('straightenBtn');
+  const dualBtn   = document.getElementById('dualBtn');
+  const swapBtn   = document.getElementById('swapBtn');
+  const focalIn   = document.getElementById('focalIn');
+  const sensorIn  = document.getElementById('sensorIn');
+  const xpanInfo  = document.getElementById('xpanInfo');
   const ctx       = canvas.getContext('2d');
 
   // ===== Constants =====
@@ -314,6 +347,8 @@
   const HANDLE_SZ = 10;
   const HANDLE_HIT = 14;
   const HANDLE_CURSOR = { tl: 'nwse-resize', br: 'nwse-resize', tr: 'nesw-resize', bl: 'nesw-resize' };
+  const XPAN_NATIVE = [30, 45, 90];
+  const XPAN_FRAME_W_MM = 65; // pano frame width on film
   const PRESETS = {
     '65:24':  { w: 65,  h: 24  },
     '3:2':    { w: 3,   h: 2   },
@@ -333,6 +368,10 @@
   let source  = null;
   let cropN   = { top: 0, left: 0, bottom: 1, right: 1 };
   let view    = { scale: 1, ox: 0, oy: 0, fitScale: 1 };
+  let rotation = 0;             // degrees, image rotated CW by this much
+  let dualMode = false;
+  let pickHorizon = false;
+  let horizonFirst = null;      // {x, y} canvas-space first click during straighten
 
   let dragMode  = null;
   let dragStart = null;
@@ -428,10 +467,7 @@
       const depthTag = src.bitDepth ? ` ${src.bitDepth}-bit` : '';
       info.textContent = `${f.name}  ${src.w} × ${src.h}  ·  ${type.toUpperCase()}${depthTag}`;
       exportBtn.textContent = `Export ${type === 'jpeg' ? 'JPEG' : type.toUpperCase()}`;
-      exportNote.textContent = type === 'jpeg'
-        ? 'JPEG re-encoded (use PNG/TIFF from Lightroom for lossless)'
-        : '';
-      exportNote.className = 'info' + (type === 'jpeg' ? ' warn' : '');
+      updateExportNote();
 
       recomputeCrop(true);
       resizeCanvas();
@@ -444,8 +480,22 @@
   }
 
   // ===== Crop math =====
+  // Rotated bounding-box dimensions (the visible frame the crop lives in).
+  // When rotation = 0 this is just source.w × source.h.
+  function imgDims() {
+    if (!source) return { w: 1, h: 1 };
+    if (rotation === 0) return { w: source.w, h: source.h };
+    const r = rotation * Math.PI / 180;
+    const c = Math.abs(Math.cos(r));
+    const s = Math.abs(Math.sin(r));
+    return {
+      w: source.w * c + source.h * s,
+      h: source.w * s + source.h * c,
+    };
+  }
   function computeFitCrop(targetAspect) {
-    const sA = source.w / source.h;
+    const dims = imgDims();
+    const sA = dims.w / dims.h;
     if (targetAspect >= sA) {
       const hFrac = sA / targetAspect;
       const cut = (1 - hFrac) / 2;
@@ -492,12 +542,13 @@
   function fitView() {
     if (!source) return;
     const cs = cssSize();
+    const dims = imgDims();
     const pad = 20;
-    const s = Math.min((cs.w - pad * 2) / source.w, (cs.h - pad * 2) / source.h);
+    const s = Math.min((cs.w - pad * 2) / dims.w, (cs.h - pad * 2) / dims.h);
     view.fitScale = s;
     view.scale    = s;
-    view.ox = (cs.w - source.w * s) / 2;
-    view.oy = (cs.h - source.h * s) / 2;
+    view.ox = (cs.w - dims.w * s) / 2;
+    view.oy = (cs.h - dims.h * s) / 2;
     updateZoomLabel();
   }
   function setZoom(newScale, cx, cy) {
@@ -525,11 +576,26 @@
     ctx.fillRect(0, 0, cs.w, cs.h);
     if (!source) return;
 
-    const imgW = source.w * view.scale;
-    const imgH = source.h * view.scale;
-    ctx.imageSmoothingEnabled = view.scale < 1;
+    const dims = imgDims();
+    const imgW = dims.w * view.scale;
+    const imgH = dims.h * view.scale;
+
+    // Draw rotated source centered in the rotated bounding box
+    ctx.save();
+    ctx.imageSmoothingEnabled = view.scale < 1 || rotation !== 0;
     ctx.imageSmoothingQuality = 'high';
-    ctx.drawImage(source.preview, view.ox, view.oy, imgW, imgH);
+    ctx.translate(view.ox + imgW / 2, view.oy + imgH / 2);
+    if (rotation !== 0) ctx.rotate(rotation * Math.PI / 180);
+    const sw = source.w * view.scale, sh = source.h * view.scale;
+    ctx.drawImage(source.preview, -sw / 2, -sh / 2, sw, sh);
+    ctx.restore();
+
+    // Faint outline of the rotated bounding box (helps when rotated)
+    if (rotation !== 0) {
+      ctx.strokeStyle = 'rgba(255,255,255,0.12)';
+      ctx.lineWidth = 1;
+      ctx.strokeRect(view.ox + 0.5, view.oy + 0.5, imgW - 1, imgH - 1);
+    }
 
     const cx = view.ox + cropN.left * imgW;
     const cy = view.oy + cropN.top  * imgH;
@@ -577,19 +643,69 @@
       ctx.strokeRect(hx - half + 0.5, hy - half + 0.5, hs - 1, hs - 1);
     }
 
+    // Dual-format alt outline (XPan: 24×65 ↔ 24×36)
+    if (dualMode && cw > 1 && ch > 1) {
+      const curA = cw / ch;
+      const altA = curA >= 2 ? (3 / 2) : (65 / 24);
+      let altW = ch * altA;
+      let altH = ch;
+      if (altW > imgW) { const r = imgW / altW; altW *= r; altH *= r; }
+      let altX = cx + cw / 2 - altW / 2;
+      const altY = cy + (ch - altH) / 2;
+      if (altX < view.ox) altX = view.ox;
+      if (altX + altW > view.ox + imgW) altX = view.ox + imgW - altW;
+      ctx.strokeStyle = 'rgba(232,184,74,0.85)';
+      ctx.lineWidth = 1.5;
+      ctx.setLineDash([6, 4]);
+      ctx.strokeRect(altX + 0.5, altY + 0.5, altW - 1, altH - 1);
+      ctx.setLineDash([]);
+      ctx.fillStyle = 'rgba(232,184,74,0.95)';
+      ctx.font = '11px ui-monospace, Consolas, monospace';
+      const label = altA >= 2 ? 'alt: pano 65:24' : 'alt: normal 3:2';
+      ctx.fillText(label, altX + 4, altY - 4);
+    }
+
+    // Horizon-pick guidance
+    if (pickHorizon && horizonFirst) {
+      ctx.strokeStyle = 'rgba(232,184,74,0.9)';
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.arc(horizonFirst.x, horizonFirst.y, 4, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+
     updateCropInfo();
   }
   function updateCropInfo() {
-    if (!source) { cropInfo.textContent = '—'; return; }
-    const pw = Math.round((cropN.right - cropN.left) * source.w);
-    const ph = Math.round((cropN.bottom - cropN.top) * source.h);
+    if (!source) { cropInfo.textContent = '—'; updateXPanInfo(); return; }
+    const dims = imgDims();
+    const pw = Math.round((cropN.right - cropN.left) * dims.w);
+    const ph = Math.round((cropN.bottom - cropN.top) * dims.h);
     const f = n => n.toFixed(4);
-    cropInfo.textContent = `crop ${pw} × ${ph}  ·  L ${f(cropN.left)}  T ${f(cropN.top)}  R ${f(cropN.right)}  B ${f(cropN.bottom)}`;
+    const rotTag = rotation !== 0 ? `  ·  rot ${rotation.toFixed(1)}°` : '';
+    cropInfo.textContent = `crop ${pw} × ${ph}${rotTag}  ·  L ${f(cropN.left)} T ${f(cropN.top)} R ${f(cropN.right)} B ${f(cropN.bottom)}`;
+    updateXPanInfo();
+  }
+
+  function updateXPanInfo() {
+    if (!source) { xpanInfo.textContent = 'load an image…'; return; }
+    const cropFracW = Math.max(1e-6, cropN.right - cropN.left);
+    // Crop horizontal sensor coverage in mm (rotation ~ ignored for AOV calc; small angles)
+    const cropSensorWmm = sensorMm * cropFracW * (imgDims().w / source.w);
+    const aovRad = 2 * Math.atan(cropSensorWmm / (2 * focalMm));
+    const xpanFL = (XPAN_FRAME_W_MM / 2) / Math.tan(aovRad / 2);
+    const nearest = XPAN_NATIVE.reduce((a, b) =>
+      Math.abs(b - xpanFL) < Math.abs(a - xpanFL) ? b : a
+    );
+    xpanInfo.innerHTML =
+      `${(aovRad * 180 / Math.PI).toFixed(1)}° AOV<br>` +
+      `XPan ≈ <b>${xpanFL.toFixed(0)}mm</b> (nearest native: ${nearest}mm)`;
   }
 
   // ===== Interaction =====
   function cropScreenRect() {
-    const imgW = source.w * view.scale, imgH = source.h * view.scale;
+    const dims = imgDims();
+    const imgW = dims.w * view.scale, imgH = dims.h * view.scale;
     return {
       x: view.ox + cropN.left * imgW,
       y: view.oy + cropN.top  * imgH,
@@ -629,9 +745,10 @@
   }
   function doResize(cx, cy, free) {
     const { anchor } = dragStart;
+    const dims = imgDims();
     const imgL = view.ox, imgT = view.oy;
-    const imgR = imgL + source.w * view.scale;
-    const imgB = imgT + source.h * view.scale;
+    const imgR = imgL + dims.w * view.scale;
+    const imgB = imgT + dims.h * view.scale;
 
     const ccx = Math.max(imgL, Math.min(imgR, cx));
     const ccy = Math.max(imgT, Math.min(imgB, cy));
@@ -664,8 +781,8 @@
 
     const x = sX >= 0 ? anchor.x : anchor.x - w;
     const y = sY >= 0 ? anchor.y : anchor.y - h;
-    const imgW = source.w * view.scale;
-    const imgH = source.h * view.scale;
+    const imgW = dims.w * view.scale;
+    const imgH = dims.h * view.scale;
     cropN = {
       left:   Math.max(0, (x - view.ox) / imgW),
       top:    Math.max(0, (y - view.oy) / imgH),
@@ -674,8 +791,8 @@
     };
 
     if (free) {
-      const W = Math.round((cropN.right  - cropN.left) * source.w);
-      const H = Math.round((cropN.bottom - cropN.top)  * source.h);
+      const W = Math.round((cropN.right  - cropN.left) * dims.w);
+      const H = Math.round((cropN.bottom - cropN.top)  * dims.h);
       if (W > 0 && H > 0) {
         suppressInput = true;
         arW.value = W; arH.value = H;
@@ -697,10 +814,27 @@
 
   canvas.addEventListener('pointerdown', e => {
     if (!source) return;
-    canvas.setPointerCapture(e.pointerId);
     const r = canvas.getBoundingClientRect();
     const cx = e.clientX - r.left;
     const cy = e.clientY - r.top;
+
+    // Horizon-line picker consumes clicks
+    if (pickHorizon && e.button === 0) {
+      if (!horizonFirst) {
+        horizonFirst = { x: cx, y: cy };
+        render();
+      } else {
+        const dx = cx - horizonFirst.x;
+        const dy = cy - horizonFirst.y;
+        if (Math.hypot(dx, dy) < 4) return; // ignore double-click on same point
+        const angleDeg = Math.atan2(dy, dx) * 180 / Math.PI;
+        setRotation(rotation - angleDeg);
+        exitPickHorizon();
+      }
+      return;
+    }
+
+    canvas.setPointerCapture(e.pointerId);
     const wantPan = spaceHeld || e.button === 1 || e.button === 2;
     const handle = !wantPan && e.button === 0 ? hitHandle(cx, cy) : null;
     if (handle) {
@@ -731,7 +865,8 @@
       return;
     }
     if (dragMode === 'crop') {
-      const imgW = source.w * view.scale, imgH = source.h * view.scale;
+      const dims = imgDims();
+      const imgW = dims.w * view.scale, imgH = dims.h * view.scale;
       moveCropBy((cx - dragStart.x) / imgW, (cy - dragStart.y) / imgH, dragStart.base);
     } else if (dragMode === 'resize') {
       doResize(cx, cy, e.ctrlKey || e.metaKey);
@@ -770,7 +905,8 @@
     if (!source) return;
     if (['ArrowLeft','ArrowRight','ArrowUp','ArrowDown'].includes(e.key)) {
       e.preventDefault();
-      const step = (e.shiftKey ? 10 : 1) / Math.max(source.w, source.h);
+      const dims = imgDims();
+      const step = (e.shiftKey ? 10 : 1) / Math.max(dims.w, dims.h);
       if (e.key === 'ArrowLeft')  moveCropBy(-step, 0);
       if (e.key === 'ArrowRight') moveCropBy( step, 0);
       if (e.key === 'ArrowUp')    moveCropBy(0, -step);
@@ -797,6 +933,70 @@
     matteBtn.textContent = 'Matte: ' + (matteOn ? 'On' : 'Off');
     render();
   });
+
+  // Rotation
+  function setRotation(r) {
+    rotation = Math.max(-15, Math.min(15, r));
+    rotateSlider.value = rotation.toFixed(1);
+    rotLabel.textContent = rotation.toFixed(1) + '°';
+    updateExportNote();
+    render();
+  }
+  rotateSlider.addEventListener('input', () => setRotation(+rotateSlider.value));
+  rotReset.addEventListener('click', () => setRotation(0));
+
+  // Straighten (horizon-line picker)
+  function exitPickHorizon() {
+    pickHorizon = false;
+    horizonFirst = null;
+    straightenBtn.textContent = 'Straighten';
+    canvas.style.cursor = 'default';
+    if (source) hintText.textContent = `${source.name} loaded — drag corners to resize, ctrl+drag to free resize`;
+  }
+  straightenBtn.addEventListener('click', () => {
+    if (!source) return;
+    pickHorizon = !pickHorizon;
+    horizonFirst = null;
+    straightenBtn.textContent = pickHorizon ? 'Cancel pick' : 'Straighten';
+    canvas.style.cursor = pickHorizon ? 'crosshair' : 'default';
+    hintText.textContent = pickHorizon
+      ? 'Click two points along what should be horizontal'
+      : `${source.name} loaded — drag corners to resize, ctrl+drag to free resize`;
+    render();
+  });
+
+  // Dual format
+  dualBtn.addEventListener('click', () => {
+    dualMode = !dualMode;
+    dualBtn.textContent = 'Dual: ' + (dualMode ? 'On' : 'Off');
+    swapBtn.hidden = !dualMode;
+    render();
+  });
+  swapBtn.addEventListener('click', () => {
+    const cur = (+arW.value) / Math.max(1, +arH.value);
+    const target = cur >= 2 ? '3:2' : '65:24';
+    presetSel.value = target;
+    const p = PRESETS[target];
+    suppressInput = true;
+    arW.value = p.w; arH.value = p.h;
+    suppressInput = false;
+    recomputeCrop(false);
+    render();
+  });
+
+  // Focal-length / sensor inputs
+  focalIn.addEventListener('input',  () => { focalMm  = Math.max(1, +focalIn.value  || 1); updateXPanInfo(); });
+  sensorIn.addEventListener('input', () => { sensorMm = Math.max(1, +sensorIn.value || 1); updateXPanInfo(); });
+
+  // Centralized export-note updater
+  function updateExportNote() {
+    if (!source) { exportNote.textContent = ''; exportNote.className = 'info'; return; }
+    const parts = [];
+    if (source.type === 'jpeg') parts.push('JPEG re-encoded');
+    if (rotation !== 0)        parts.push('rotated → 8-bit re-render');
+    exportNote.textContent = parts.join(' · ');
+    exportNote.className = 'info' + (parts.length ? ' warn' : '');
+  }
 
   // Presets
   presetSel.addEventListener('change', () => {
@@ -848,17 +1048,23 @@
     const prevLabel = exportBtn.textContent;
     exportBtn.textContent = 'Exporting…';
     try {
-      const sx = Math.round(cropN.left * source.w);
-      const sy = Math.round(cropN.top  * source.h);
-      const sw = Math.round((cropN.right  - cropN.left) * source.w);
-      const sh = Math.round((cropN.bottom - cropN.top)  * source.h);
+      const dims = imgDims();
+      const sx = Math.round(cropN.left * dims.w);
+      const sy = Math.round(cropN.top  * dims.h);
+      const sw = Math.round((cropN.right  - cropN.left) * dims.w);
+      const sh = Math.round((cropN.bottom - cropN.top)  * dims.h);
       const pad = matteOn ? MATTE_PX : 0;
       const base = source.name.replace(/\.[^.]+$/, '');
       const ratioLabel = `${+arW.value}x${+arH.value}`;
       const matteTag = matteOn ? '_matte' : '';
+      const rotTag = rotation !== 0 ? `_rot${rotation.toFixed(1)}` : '';
 
       let blob, ext;
-      if (source.type === 'png' && source.bitDepth === 16) {
+      if (rotation !== 0) {
+        // Rotation requires resampling — single 8-bit PNG path
+        blob = await exportRotated(sx, sy, sw, sh, pad);
+        ext = 'png';
+      } else if (source.type === 'png' && source.bitDepth === 16) {
         await ensureUPNG();
         blob = await exportPng16(sx, sy, sw, sh, pad);
         ext = 'png';
@@ -879,7 +1085,7 @@
 
       const a = document.createElement('a');
       a.href = URL.createObjectURL(blob);
-      a.download = `${base}_xpan_${ratioLabel}${matteTag}.${ext}`;
+      a.download = `${base}_xpan_${ratioLabel}${rotTag}${matteTag}.${ext}`;
       document.body.appendChild(a);
       a.click();
       a.remove();
@@ -1082,6 +1288,29 @@
     if (pad) { cx.fillStyle = '#ffffff'; cx.fillRect(0, 0, c.width, c.height); }
     cx.drawImage(source.preview, sx, sy, sw, sh, pad, pad, sw, sh);
     return await new Promise(r => c.toBlob(r, 'image/jpeg', 0.97));
+  }
+
+  // --- Rotated export: rebuild rotated source on a canvas (8-bit), then crop axis-aligned
+  async function exportRotated(sx, sy, sw, sh, pad) {
+    const dims = imgDims();
+    const W = Math.round(dims.w), H = Math.round(dims.h);
+    const full = document.createElement('canvas');
+    full.width = W; full.height = H;
+    const fctx = full.getContext('2d');
+    fctx.imageSmoothingEnabled = true;
+    fctx.imageSmoothingQuality = 'high';
+    fctx.translate(W / 2, H / 2);
+    fctx.rotate(rotation * Math.PI / 180);
+    fctx.drawImage(source.preview, -source.w / 2, -source.h / 2);
+
+    const c = document.createElement('canvas');
+    c.width  = sw + pad * 2;
+    c.height = sh + pad * 2;
+    const cctx = c.getContext('2d');
+    cctx.imageSmoothingEnabled = false;
+    if (pad) { cctx.fillStyle = '#ffffff'; cctx.fillRect(0, 0, c.width, c.height); }
+    cctx.drawImage(full, sx, sy, sw, sh, pad, pad, sw, sh);
+    return await new Promise(r => c.toBlob(r, 'image/png'));
   }
 
   // Init
