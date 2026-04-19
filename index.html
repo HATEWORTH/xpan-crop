@@ -225,6 +225,11 @@
 
   <button id="center">Center</button>
   <button id="matteBtn">Matte: Off</button>
+  <div class="field">
+    <input type="number" id="matteW" value="20" min="0" max="500" step="1" title="Matte width in source pixels" style="width:54px;">
+    <span>px</span>
+    <input type="color" id="matteColor" value="#ffffff" title="Matte color" style="width:30px; height:26px; padding:0; border:1px solid var(--border); border-radius:3px; background:#0d0d0d;">
+  </div>
 
   <span class="divider"></span>
   <div class="field">
@@ -340,10 +345,11 @@
   const focalIn   = document.getElementById('focalIn');
   const sensorIn  = document.getElementById('sensorIn');
   const xpanInfo  = document.getElementById('xpanInfo');
+  const matteWIn  = document.getElementById('matteW');
+  const matteColorIn = document.getElementById('matteColor');
   const ctx       = canvas.getContext('2d');
 
   // ===== Constants =====
-  const MATTE_PX = 20;
   const HANDLE_SZ = 10;
   const HANDLE_HIT = 14;
   const HANDLE_CURSOR = { tl: 'nwse-resize', br: 'nwse-resize', tr: 'nesw-resize', bl: 'nesw-resize' };
@@ -365,6 +371,8 @@
 
   // ===== State =====
   let matteOn = false;
+  let matteWidth = 20;            // source pixels
+  let matteColor = '#ffffff';
   let source  = null;
   let cropN   = { top: 0, left: 0, bottom: 1, right: 1 };
   let view    = { scale: 1, ox: 0, oy: 0, fitScale: 1 };
@@ -608,9 +616,9 @@
     ctx.fillRect(0, cy, cx, ch);
     ctx.fillRect(cx + cw, cy, cs.w - (cx + cw), ch);
 
-    if (matteOn) {
-      const m = MATTE_PX * view.scale;
-      ctx.fillStyle = '#ffffff';
+    if (matteOn && matteWidth > 0) {
+      const m = matteWidth * view.scale;
+      ctx.fillStyle = matteColor;
       ctx.fillRect(cx - m, cy - m, cw + m * 2, m);
       ctx.fillRect(cx - m, cy + ch, cw + m * 2, m);
       ctx.fillRect(cx - m, cy, m, ch);
@@ -933,6 +941,20 @@
     matteBtn.textContent = 'Matte: ' + (matteOn ? 'On' : 'Off');
     render();
   });
+  matteWIn.addEventListener('input', () => {
+    matteWidth = Math.max(0, +matteWIn.value || 0);
+    if (matteOn) render();
+  });
+  matteColorIn.addEventListener('input', () => {
+    matteColor = matteColorIn.value;
+    if (matteOn) render();
+  });
+
+  function hexToRgb(hex) {
+    const m = (hex || '#ffffff').match(/^#?([\da-f]{2})([\da-f]{2})([\da-f]{2})$/i);
+    if (!m) return { r: 255, g: 255, b: 255 };
+    return { r: parseInt(m[1], 16), g: parseInt(m[2], 16), b: parseInt(m[3], 16) };
+  }
 
   // Rotation
   function setRotation(r) {
@@ -1053,7 +1075,7 @@
       const sy = Math.round(cropN.top  * dims.h);
       const sw = Math.round((cropN.right  - cropN.left) * dims.w);
       const sh = Math.round((cropN.bottom - cropN.top)  * dims.h);
-      const pad = matteOn ? MATTE_PX : 0;
+      const pad = matteOn ? matteWidth : 0;
       const base = source.name.replace(/\.[^.]+$/, '');
       const ratioLabel = `${+arW.value}x${+arH.value}`;
       const matteTag = matteOn ? '_matte' : '';
@@ -1105,7 +1127,7 @@
     c.height = sh + pad * 2;
     const cx = c.getContext('2d');
     cx.imageSmoothingEnabled = false;
-    if (pad) { cx.fillStyle = '#ffffff'; cx.fillRect(0, 0, c.width, c.height); }
+    if (pad) { cx.fillStyle = matteColor; cx.fillRect(0, 0, c.width, c.height); }
     cx.drawImage(source.preview, sx, sy, sw, sh, pad, pad, sw, sh);
     return await new Promise(r => c.toBlob(r, 'image/png'));
   }
@@ -1117,7 +1139,16 @@
     const outW = sw + pad * 2;
     const outH = sh + pad * 2;
     const out = new Uint8Array(outW * outH * 8);
-    if (pad) out.fill(0xFF);
+    if (pad) {
+      const c = hexToRgb(matteColor);
+      const r16 = (c.r << 8) | c.r, g16 = (c.g << 8) | c.g, b16 = (c.b << 8) | c.b;
+      for (let i = 0; i < out.length; i += 8) {
+        out[i]   = r16 >> 8; out[i+1] = r16 & 0xFF;
+        out[i+2] = g16 >> 8; out[i+3] = g16 & 0xFF;
+        out[i+4] = b16 >> 8; out[i+5] = b16 & 0xFF;
+        out[i+6] = 0xFF;     out[i+7] = 0xFF;
+      }
+    }
     const srcStride = decoded.width * 8;
     const dstStride = outW * 8;
     for (let y = 0; y < sh; y++) {
@@ -1160,7 +1191,7 @@
     c.height = sh + pad * 2;
     const cx = c.getContext('2d');
     cx.imageSmoothingEnabled = false;
-    if (pad) { cx.fillStyle = '#ffffff'; cx.fillRect(0, 0, c.width, c.height); }
+    if (pad) { cx.fillStyle = matteColor; cx.fillRect(0, 0, c.width, c.height); }
     cx.drawImage(source.preview, sx, sy, sw, sh, pad, pad, sw, sh);
     const id = cx.getImageData(0, 0, c.width, c.height);
     const tiff = UTIF.encodeImage(id.data.buffer, c.width, c.height);
@@ -1172,7 +1203,13 @@
     const outW = sw + pad * 2;
     const outH = sh + pad * 2;
     const rgb16 = new Uint16Array(outW * outH * 3);
-    if (pad) rgb16.fill(0xFFFF);
+    if (pad) {
+      const c = hexToRgb(matteColor);
+      const r16 = (c.r << 8) | c.r, g16 = (c.g << 8) | c.g, b16 = (c.b << 8) | c.b;
+      for (let i = 0; i < rgb16.length; i += 3) {
+        rgb16[i] = r16; rgb16[i + 1] = g16; rgb16[i + 2] = b16;
+      }
+    }
     const srcW = source.w;
     for (let y = 0; y < sh; y++) {
       for (let x = 0; x < sw; x++) {
@@ -1285,7 +1322,7 @@
     c.height = sh + pad * 2;
     const cx = c.getContext('2d');
     cx.imageSmoothingEnabled = false;
-    if (pad) { cx.fillStyle = '#ffffff'; cx.fillRect(0, 0, c.width, c.height); }
+    if (pad) { cx.fillStyle = matteColor; cx.fillRect(0, 0, c.width, c.height); }
     cx.drawImage(source.preview, sx, sy, sw, sh, pad, pad, sw, sh);
     return await new Promise(r => c.toBlob(r, 'image/jpeg', 0.97));
   }
@@ -1308,7 +1345,7 @@
     c.height = sh + pad * 2;
     const cctx = c.getContext('2d');
     cctx.imageSmoothingEnabled = false;
-    if (pad) { cctx.fillStyle = '#ffffff'; cctx.fillRect(0, 0, c.width, c.height); }
+    if (pad) { cctx.fillStyle = matteColor; cctx.fillRect(0, 0, c.width, c.height); }
     cctx.drawImage(full, sx, sy, sw, sh, pad, pad, sw, sh);
     return await new Promise(r => c.toBlob(r, 'image/png'));
   }
